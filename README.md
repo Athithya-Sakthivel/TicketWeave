@@ -10,6 +10,9 @@ For tickets requiring human intervention, an LLM-powered ticket router generates
 
 ---
 
+![alt text](src/offline/images/agentops.gif)
+
+---
 ## Architecture . [Docs](docs/architecture.md)
 
 <img width="1536" height="1024" alt="image" src="https://github.com/user-attachments/assets/8a7acac1-bf67-44e4-b832-b08c29924fd4" />
@@ -165,8 +168,9 @@ export DOMAIN="athithya.site"  # replace with your domain
 bash src/infra/cloudflare/run.sh --apply
 ```
 
-![alt text](src/offline/images/cf.png)
+![alt text](src/offline/images/edge_tf_outputs.png)
 
+---
 
 #### 1.2 Provision AWS Infrastructure. [Docs](docs/infra.md)
 Provisions a VPC (public subnets for ECS, private subnets for RDS), a 2‑node ECS cluster on `t4g.small` ARM64 instances, S3 (policy embeddings), DynamoDB (rate‑limiting counters), RDS PostgreSQL (business data + LangGraph checkpoints), ECR repositories (immutable tags, scan‑on‑push), and least‑privilege IAM roles — all declared in OpenTofu.
@@ -179,6 +183,7 @@ bash src/infra/aws/run.sh --create --env staging
 
 ![alt text](src/offline/images/aws.png)
 
+---
 
 ### Phase 2: Data Preparation (Mimic a fictional e‑commerce company named Kestral)
 - Creates the `users`, `products`, `orders`, `billing`, and `tickets` tables and populates them with synthetic data so the agent has customers to look up and orders to reference. [Docs](docs/pg_tables.md)
@@ -201,6 +206,7 @@ bash src/offline/index-policies/commands.sh
 
 ![alt text](src/offline/images/simulate_kestral.png)
 
+---
 
 ### Phase 3.1: Trigger CI Workflows (Build & Push Container Images)
 
@@ -216,6 +222,7 @@ git add . && git commit -m "Rebuilding mcp and agent docker images" && git push 
 
 ![alt text](src/offline/images/ci.png)
 
+---
 
 ### Phase 3.2: Store OAuth Secrets in AWS SSM Parameter Store
 
@@ -243,7 +250,7 @@ aws ecs update-service --cluster agentops-staging-cluster --service agentops-sta
 aws ecs update-service --cluster agentops-staging-cluster --service agentops-staging-cluster-mcp --force-new-deployment --region ap-south-1
 ```
 
-![alt text](src/offline/images/force_reload.png)
+![alt text](src/offline/images/force_reload_ecs.png)
 
 ---
 
