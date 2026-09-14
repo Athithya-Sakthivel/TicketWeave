@@ -251,6 +251,11 @@ aws ecs update-service --cluster agentops-staging-cluster --service agentops-sta
 
 ---
 
+![alt text](src/offline/images/agentops.gif)
+
+---
+
+
 ### Phase 4: Teardown
 
 Destroys the Cloudflare DNS records and Tunnel, then tears down all AWS resources (VPC, ECS, RDS, S3, DynamoDB, ECR, IAM roles). Order matters: Cloudflare first so the tunnel stops routing traffic before the backend is removed.
@@ -259,11 +264,6 @@ Destroys the Cloudflare DNS records and Tunnel, then tears down all AWS resource
 bash src/infra/cloudflare/run.sh --destroy
 bash src/infra/aws/run.sh --destroy --env staging --yes-delete
 ```
-
----
-
-
-![alt text](src/offline/images/agentops.gif)
 
 ---
 
