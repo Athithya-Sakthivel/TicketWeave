@@ -10,9 +10,6 @@ For tickets requiring human intervention, an LLM-powered ticket router generates
 
 ---
 
-![alt text](src/offline/images/agentops.gif)
-
----
 ## Architecture . [Docs](docs/architecture.md)
 
 <img width="1536" height="1024" alt="image" src="https://github.com/user-attachments/assets/8a7acac1-bf67-44e4-b832-b08c29924fd4" />
@@ -254,11 +251,6 @@ aws ecs update-service --cluster agentops-staging-cluster --service agentops-sta
 
 ---
 
-## [▶ Agent Demo](https://www.youtube.com/watch?v=GD__e4UwAlA)
-
----
-
-
 ### Phase 4: Teardown
 
 Destroys the Cloudflare DNS records and Tunnel, then tears down all AWS resources (VPC, ECS, RDS, S3, DynamoDB, ECR, IAM roles). Order matters: Cloudflare first so the tunnel stops routing traffic before the backend is removed.
@@ -268,7 +260,10 @@ bash src/infra/cloudflare/run.sh --destroy
 bash src/infra/aws/run.sh --destroy --env staging --yes-delete
 ```
 
-![alt text](src/offline/images/delete.png)
+---
+
+
+![alt text](src/offline/images/agentops.gif)
 
 ---
 
