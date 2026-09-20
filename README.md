@@ -23,6 +23,8 @@ For tickets requiring human intervention, an LLM generates a concise summary and
 
 > **Measurement note:** The figures above reflect the architecture, configuration, and recorded scan/cost estimates in this repository. Actual AWS costs, latency, and security-scan results will vary with region, workload, traffic, and configuration.
 
+---
+
 ## Agent Demo 
 
 ![TicketWeave workflow](src/offline/images/agentops.gif)
@@ -195,13 +197,13 @@ echo "[INFO] Private repository '$REPO_NAME' created and pushed."
 ### Phase 1: Infrastructure Foundation
 
 #### 1.1 Set Up Cloudflare Tunnel and DNS. [Docs](src/infra/cloudflare/README.md)
-Creates a `athithya.site` CNAME record → Cloudflare Tunnel and deploys a `cloudflared` daemon that routes HTTPS/WSS traffic into the VPC **without a load balancer or public IPs**. The tunnel terminates on each EC2 host and forwards to `localhost:8000` (agent‑service). Requires a browser login to your Cloudflare account.
+Creates a CNAME record → Cloudflare Tunnel and deploys a `cloudflared` daemon that routes HTTPS/WSS traffic into the VPC **without a load balancer or public IPs**. The tunnel terminates on each EC2 host and forwards to `localhost:8000` (agent‑service). Requires a browser login to your Cloudflare account.
 
 ```sh
 export CLOUDFLARE_ACCOUNT_ID=      # Cloudflare dashboard > Account Home > Search and enter "Copy account ID".
 export CLOUDFLARE_GLOBAL_API_KEY=  # https://dash.cloudflare.com/profile/api-tokens > API Keys
-export CLOUDFLARE_EMAIL="athithya651@gmail.com" # Replace with your email
-export DOMAIN="athithya.site"  # replace with your domain
+export CLOUDFLARE_EMAIL=           # Replace with your email
+export DOMAIN=                     # replace with your domain
 bash src/infra/cloudflare/run.sh --apply
 ```
 
@@ -214,7 +216,7 @@ Provisions a VPC (public subnets for ECS, private subnets for RDS), a 2‑node E
 
 ```sh
 export TF_VAR_region="ap-south-1"
-export TF_VAR_github_repository="Athithya-Sakthivel/TicketWeave"   # replace with your GitHub repo
+export TF_VAR_github_repository="<GH_USER_NAME>/$REPO_NAME"
 bash src/infra/aws/run.sh --create --env staging
 ```
 
@@ -222,7 +224,8 @@ bash src/infra/aws/run.sh --create --env staging
 
 ---
 
-### Phase 2: Data Preparation (Mimic a fictional e‑commerce company named Kestral)
+### Phase 2: Data Preparation (Seed the fictional e-commerce company Kestral)
+
 - Creates the `users`, `products`, `orders`, `billing`, and `tickets` tables and populates them with synthetic data so the agent has customers to look up and orders to reference. [Docs](docs/pg_tables.md)
 - Generates Bedrock Titan v2 embeddings for 6 internal policy Markdown files (~59 chunks), writes a single `embeddings.json` to S3, and loads it in‑memory at agent startup for sub‑5ms brute‑force cosine retrieval. [Docs](docs/serverless_rag.md)
 
@@ -268,15 +271,17 @@ The agent‑service authenticates users via Google OAuth (Microsoft is optional)
 > **OAuth Setup:** [Google](https://oauth2-proxy.github.io/oauth2-proxy/configuration/providers/google/#usage) | [Microsoft](https://oauth2-proxy.github.io/oauth2-proxy/configuration/providers/ms_entra_id)
 
 ```sh
-export GOOGLE_CLIENT_ID="..."
-export GOOGLE_CLIENT_SECRET="..."
-# Optional: Microsoft OAuth
+export GOOGLE_CLIENT_ID="..."            # Google OAuth client ID
+export GOOGLE_CLIENT_SECRET="..."        # Google OAuth client secret
+
 # export MICROSOFT_CLIENT_ID="..."
 # export MICROSOFT_CLIENT_SECRET="..."
-# export MICROSOFT_TENANT_ID="..."
-export DOMAIN="athithya.site"
+# export MICROSOFT_TENANT_ID="..."       # Primary tenant ID (single-tenant or common)
+export DOMAIN=                           # Use the same $DOMAIN
 bash src/scripts/ssm-put.sh
 ```
+
+---
 
 ### Phase 3.3: Force Redeploy ECS Services
 
