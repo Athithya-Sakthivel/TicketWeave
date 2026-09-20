@@ -175,253 +175,142 @@ Recommended authentication flow:
 
 ---
 
-## Create a New GitHub Repository
+## Create a New Repository in your GitHub account
 
 ```sh
 export REPO_NAME="TicketWeave-1"
-
 git remote remove origin 2>/dev/null || true
-
 gh repo create "$REPO_NAME" --private >/dev/null 2>&1
-
 REMOTE_URL="https://github.com/$(gh api user | jq -r .login)/$REPO_NAME.git"
-
 git remote add origin "$REMOTE_URL" 2>/dev/null || true
 git branch -M main 2>/dev/null || true
-
 git push -u origin main
 git pull
 git remote -v
-
 echo "[INFO] Private repository '$REPO_NAME' created and pushed."
 ```
 
 ---
 
-# Phase 1 — Infrastructure Foundation
+### Phase 1: Infrastructure Foundation
 
-## 1.1 Set Up Cloudflare Tunnel and DNS
-
-[Docs](src/infra/cloudflare/README.md)
-
-This step creates the DNS record and provisions the Cloudflare Tunnel used to route HTTPS/WSS traffic into the environment without a load balancer.
-
-Set your own values before running:
+#### 1.1 Set Up Cloudflare Tunnel and DNS. [Docs](src/infra/cloudflare/README.md)
+Creates a `athithya.site` CNAME record → Cloudflare Tunnel and deploys a `cloudflared` daemon that routes HTTPS/WSS traffic into the VPC **without a load balancer or public IPs**. The tunnel terminates on each EC2 host and forwards to `localhost:8000` (agent‑service). Requires a browser login to your Cloudflare account.
 
 ```sh
-export CLOUDFLARE_ACCOUNT_ID="..."
-export CLOUDFLARE_GLOBAL_API_KEY="..."
-export CLOUDFLARE_EMAIL="YOUR_CLOUDFLARE_EMAIL"
-export DOMAIN="YOUR_DOMAIN"
-```
-
-Then:
-
-```sh
+export CLOUDFLARE_ACCOUNT_ID=      # Cloudflare dashboard > Account Home > Search and enter "Copy account ID".
+export CLOUDFLARE_GLOBAL_API_KEY=  # https://dash.cloudflare.com/profile/api-tokens > API Keys
+export CLOUDFLARE_EMAIL="athithya651@gmail.com" # Replace with your email
+export DOMAIN="athithya.site"  # replace with your domain
 bash src/infra/cloudflare/run.sh --apply
 ```
 
-> Prefer a narrowly scoped Cloudflare API token where the provisioning scripts support it. Never commit the credential or place it directly in the README.
-
-![Cloudflare infrastructure](src/offline/images/edge_tf_outputs.png)
+![alt text](src/offline/images/edge_tf_outputs.png)
 
 ---
 
-## 1.2 Provision AWS Infrastructure
-
-[Docs](docs/infra.md)
-
-Provision:
-
-* VPC and subnets
-* ECS cluster
-* 2 × `t4g.small` ARM64 instances
-* S3 policy-embedding storage
-* DynamoDB rate-limiting counters
-* RDS PostgreSQL
-* ECR repositories
-* IAM roles and policies
-
-Example:
+#### 1.2 Provision AWS Infrastructure. [Docs](docs/infra.md)
+Provisions a VPC (public subnets for ECS, private subnets for RDS), a 2‑node ECS cluster on `t4g.small` ARM64 instances, S3 (policy embeddings), DynamoDB (rate‑limiting counters), RDS PostgreSQL (business data + LangGraph checkpoints), ECR repositories (immutable tags, scan‑on‑push), and least‑privilege IAM roles — all declared in OpenTofu.
 
 ```sh
 export TF_VAR_region="ap-south-1"
-export TF_VAR_github_repository="YOUR_GITHUB_OWNER/YOUR_REPOSITORY"
-
+export TF_VAR_github_repository="Athithya-Sakthivel/TicketWeave"   # replace with your GitHub repo
 bash src/infra/aws/run.sh --create --env staging
 ```
 
-![AWS infrastructure](src/offline/images/aws.png)
+![alt text](src/offline/images/aws.png)
 
 ---
 
-# Phase 2 — Data Preparation
+### Phase 2: Data Preparation (Mimic a fictional e‑commerce company named Kestral)
+- Creates the `users`, `products`, `orders`, `billing`, and `tickets` tables and populates them with synthetic data so the agent has customers to look up and orders to reference. [Docs](docs/pg_tables.md)
+- Generates Bedrock Titan v2 embeddings for 6 internal policy Markdown files (~59 chunks), writes a single `embeddings.json` to S3, and loads it in‑memory at agent startup for sub‑5ms brute‑force cosine retrieval. [Docs](docs/serverless_rag.md)
 
-TicketWeave uses a fictional e-commerce company named **Kestral** for development and testing.
-
-The data-preparation phase creates:
-
-* `users`
-* `products`
-* `orders`
-* `billing`
-* `tickets`
-
-It then generates Bedrock Titan v2 embeddings for six internal policy Markdown files (~59 chunks) and uploads the resulting `embeddings.json` file to S3.
-
-[PostgreSQL schema docs](docs/pg_tables.md)
-[Inline RAG docs](docs/serverless_rag.md)
-
-### Seed PostgreSQL and Index Policies
-
-The following flow temporarily authorizes the current public IP against the RDS security group, runs the synthetic-data setup, builds policy embeddings, and uploads them to S3.
+The command below temporarily allows your IP into the RDS security group, runs the seed script, indexes the policy documents, and uploads the embeddings:
 
 ```sh
-export MY_IP=$(curl -s ifconfig.me)
-export SG_ID=$(tofu -chdir=src/infra/aws output -raw rds_security_group_id)
-
+export MY_IP=$(curl -s ifconfig.me) SG_ID=$(tofu -chdir=src/infra/aws output -raw rds_security_group_id) && \
 aws ec2 authorize-security-group-ingress \
     --group-id "$SG_ID" \
     --protocol tcp \
     --port 5432 \
     --cidr "${MY_IP}/32" \
-    --region "${TF_VAR_region:-ap-south-1}"
-
-export DATABASE_URL="$(tofu -chdir=src/infra/aws output -raw rds_connection_string)"
-
-python3 src/offline/simulate_company/setup_postgres.py
-
+    --region "${TF_VAR_region:-ap-south-1}" && \
+export DATABASE_URL="$(tofu -chdir=src/infra/aws output -raw rds_connection_string)" && \
+python3 src/offline/simulate_company/setup_postgres.py && \
 bash src/offline/index-policies/commands.sh
 ```
 
-![Kestral test data](src/offline/images/simulate_kestral.png)
-
-> Remove the temporary RDS ingress rule after initialization if it is no longer required. The intended steady-state architecture keeps the database accessible only from the ECS environment.
+![alt text](src/offline/images/simulate_kestral.png)
 
 ---
 
-# Phase 3 — Application Deployment
+### Phase 3.1: Trigger CI Workflows (Build & Push Container Images)
 
-## 3.1 Trigger CI Workflows
-
-GitHub Actions builds and pushes the `agent-service` and `mcp-server` images to ECR.
-
-Authentication uses GitHub Actions OIDC rather than long-lived AWS credentials.
-
-Configure repository secrets:
+Pushes the `AWS_ACCOUNT_ID` and `AWS_REGION` secrets to GitHub, then makes a trivial whitespace commit to trigger the CI pipelines. GitHub Actions authenticates to ECR via OIDC (no static credentials), builds the `agent-service` and `mcp-server` Docker images, scans them with Trivy, and pushes them to ECR with immutable tags.
 
 ```sh
-gh secret set AWS_ACCOUNT_ID \
-  --body "$(aws sts get-caller-identity --query Account --output text)"
-
-gh secret set AWS_REGION \
-  --body "$TF_VAR_region"
-```
-
-Trigger a deployment build:
-
-```sh
+gh secret set AWS_ACCOUNT_ID --body $(aws sts get-caller-identity --query Account --output text)
 echo " " >> src/workloads/agent-service/infra_tests.sh
 echo " " >> src/workloads/mcp-server/test_locally.sh
-
-git add .
-git commit -m "Rebuild application container images"
-git push origin main
+gh secret set AWS_REGION --body $TF_VAR_region
+git add . && git commit -m "Rebuilding mcp and agent docker images" && git push origin main
 ```
 
-The CI workflow:
-
-1. authenticates to AWS through OIDC
-2. builds the Docker images
-3. scans the images with Trivy
-4. blocks CRITICAL findings
-5. pushes immutable ECR image tags
-
-![CI pipeline](src/offline/images/ci.png)
+![alt text](src/offline/images/ci.png)
 
 ---
 
-## 3.2 Store OAuth Secrets in AWS SSM Parameter Store
+### Phase 3.2: Store OAuth Secrets in AWS SSM Parameter Store
 
-The agent service authenticates users with Google OAuth. Microsoft Entra ID can optionally be configured.
+The agent‑service authenticates users via Google OAuth (Microsoft is optional). These secrets are stored in SSM Parameter Store — never in code or environment variables — and fetched at runtime by the ECS task role with KMS decryption. By default all google domains are allowed in both user and admin login.
 
-Credentials are stored in SSM Parameter Store rather than in application source code.
-
-OAuth provider documentation:
-
-* [Google OAuth](https://oauth2-proxy.github.io/oauth2-proxy/configuration/providers/google/)
-* [Microsoft Entra ID](https://oauth2-proxy.github.io/oauth2-proxy/configuration/providers/ms_entra_id)
-
-Example:
+> **OAuth Setup:** [Google](https://oauth2-proxy.github.io/oauth2-proxy/configuration/providers/google/#usage) | [Microsoft](https://oauth2-proxy.github.io/oauth2-proxy/configuration/providers/ms_entra_id)
 
 ```sh
 export GOOGLE_CLIENT_ID="..."
 export GOOGLE_CLIENT_SECRET="..."
-
-# Optional Microsoft OAuth
+# Optional: Microsoft OAuth
 # export MICROSOFT_CLIENT_ID="..."
 # export MICROSOFT_CLIENT_SECRET="..."
 # export MICROSOFT_TENANT_ID="..."
-
-export DOMAIN="YOUR_DOMAIN"
-
+export DOMAIN="athithya.site"
 bash src/scripts/ssm-put.sh
 ```
 
-> Treat OAuth client secrets exactly like passwords: do not commit them, paste them into issues, or place them in shell history when avoidable.
+### Phase 3.3: Force Redeploy ECS Services
 
----
-
-## 3.3 Force Redeploy ECS Services
-
-Once the images are available in ECR, force rolling deployments:
+Once the CI pipeline pushes the new images to ECR, force a rolling update on both ECS services so they pull the latest image tags. After ~5 minutes the agent is accessible at `https://<DOMAIN>`.
 
 ```sh
-aws ecs update-service \
-  --cluster agentops-staging-cluster \
-  --service agentops-staging-cluster-agent \
-  --force-new-deployment \
-  --region ap-south-1
-
-aws ecs update-service \
-  --cluster agentops-staging-cluster \
-  --service agentops-staging-cluster-mcp \
-  --force-new-deployment \
-  --region ap-south-1
+aws ecs update-service --cluster agentops-staging-cluster --service agentops-staging-cluster-agent --force-new-deployment --region ap-south-1
+aws ecs update-service --cluster agentops-staging-cluster --service agentops-staging-cluster-mcp --force-new-deployment --region ap-south-1
 ```
 
-After deployment completes, the application is available at:
-
-```text
-https://<DOMAIN>
-```
-
-![ECS redeployment](src/offline/images/force_reload_ecs.png)
+![alt text](src/offline/images/force_reload_ecs.png)
 
 ---
 
-# Phase 4 — Teardown
+### Phase 4: Teardown
 
-Destroy the Cloudflare resources first so traffic stops routing before the AWS environment is removed.
+Destroys the Cloudflare DNS records and Tunnel, then tears down all AWS resources (VPC, ECS, RDS, S3, DynamoDB, ECR, IAM roles). Order matters: Cloudflare first so the tunnel stops routing traffic before the backend is removed.
 
 ```sh
 bash src/infra/cloudflare/run.sh --destroy
-
-bash src/infra/aws/run.sh --destroy \
-  --env staging \
-  --yes-delete
+bash src/infra/aws/run.sh --destroy --env staging --yes-delete
 ```
 
 ---
 
-# Key Takeaways
+![alt text](src/offline/images/agentops.gif)
 
-* **Guardrails run before context retrieval or tool invocation.**
-* **Human agents retain control of all business-impacting decisions.**
-* **Team assignment is deterministic rather than LLM-selected.**
-* **Conversation state is checkpointed after every LangGraph node.**
-* **Inline RAG removes the need for a dedicated vector database for the current corpus.**
-* **Cloudflare Tunnel removes the need for an internet-facing load balancer in this design.**
-* **Container images are scanned and published through an OIDC-based CI/CD pipeline.**
-* **The MCP layer exposes narrow tools and does not contain business-routing logic.**
-* **The infrastructure is designed around security boundaries, predictable behavior, and low operating cost.**
+---
+
+## Key Takeaways
+
+- Guardrails execute before any tool invocation.
+- All business-impacting decisions remain with human agents.
+- Deterministic routing guarantees predictable ticket ownership.
+- Conversation state is checkpointed after every LangGraph node.
+- Inline RAG eliminates the need for a vector database.
+- Infrastructure is optimized for reliability, security, and cost efficiency.
