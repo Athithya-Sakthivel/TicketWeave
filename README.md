@@ -156,23 +156,21 @@ cd TicketWeave && code .
 
 ---
 
-## Authenticate GitHub CLI
-
-Open a new terminal:
+### Open a new terminal and login to your gh account as shown below
 
 ```sh
 git config --global user.name "Your Name"
-git config --global user.email "you@example.com"
+git config --global user.email you@example.com
 gh auth login
-```
 
-Recommended authentication flow:
-
-```text
 ? What account do you want to log into? GitHub.com
 ? What is your preferred protocol for Git operations? SSH
 ? Generate a new SSH key to add to your GitHub account? No
 ? How would you like to authenticate GitHub CLI? Login with a web browser
+
+! First copy your one-time code: <code>
+- Press Enter to open github.com in your browser... 
+✓ Authentication complete. Press Enter to continue...
 ```
 
 ---
@@ -285,7 +283,7 @@ bash src/scripts/ssm-put.sh
 
 ### Phase 3.3: Force Redeploy ECS Services
 
-Once the CI pipeline pushes the new images to ECR, force a rolling update on both ECS services so they pull the latest image tags. After ~5 minutes the agent is accessible at `https://<DOMAIN>`.
+Once the CI pipeline pushes the latest images to ECR, trigger a rolling deployment for both ECS services. After **~5 minutes**, the application will be live at `https://<DOMAIN>` and should behave like the end-to-end demo shown in the GIF.
 
 ```sh
 aws ecs update-service --cluster agentops-staging-cluster --service agentops-staging-cluster-agent --force-new-deployment --region ap-south-1
@@ -304,10 +302,6 @@ Destroys the Cloudflare DNS records and Tunnel, then tears down all AWS resource
 bash src/infra/cloudflare/run.sh --destroy
 bash src/infra/aws/run.sh --destroy --env staging --yes-delete
 ```
-
----
-
-![alt text](src/offline/images/agentops.gif)
 
 ---
 
