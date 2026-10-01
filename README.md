@@ -194,20 +194,184 @@ Full details in [docs/infra.md](docs/infra.md).
 
 ---
 
-## Deployment
+# TicketWeave — Step-by-Step Deployment Guide
 
-Full step-by-step guide in [docs/deployment.md](docs/deployment.md). Covers:
+## Prerequisites
 
-1. Dev Container setup and GitHub authentication
-2. Cloudflare Tunnel + DNS provisioning
-3. AWS infrastructure (VPC, ECS, RDS, S3, DynamoDB, ECR, IAM)
-4. Seeding the fictional e-commerce dataset and indexing policy embeddings
-5. CI workflows (build + scan + push to ECR via OIDC)
-6. OAuth secret storage in SSM Parameter Store
-7. ECS rolling deployment
-8. Teardown (Cloudflare first, then AWS)
+1. **Docker installed and running _without_ sudo access.** Non-root is required for the Dev Container stability. If needed, run `sudo usermod -aG docker $USER && newgrp docker`.
+2. **Visual Studio Code with the Dev Containers extension installed** (for a deterministic development environment): https://code.visualstudio.com/docs/devcontainers/containers
+3. **An AWS account** (AWS Free Tier is sufficient for development) with permissions to create:
+   - **Amazon ECS & EC2** (container orchestration and compute)
+   - **VPC, Subnets & Security Groups** (networking)
+   - **Amazon RDS PostgreSQL** (application database & LangGraph checkpoints)
+   - **Amazon S3** (policy embedding storage)
+   - **Amazon ECR** (container registry)
+   - **AWS Systems Manager Parameter Store** (secret management)
+   - **IAM Roles & Instance Profiles** (least-privilege access)
+4. **A Cloudflare account with a registered domain**, with permissions to manage DNS records and create Cloudflare Tunnels (`cloudflared`).
 
-Approximate time from clone to live URL: **~45 minutes**.
+---
+
+## Clone the Repository and Build the Dev Container
+
+```sh
+cd "$HOME" && rm -rf TicketWeave &&
+git clone https://github.com/Athithya-Sakthivel/TicketWeave.git &&
+cd TicketWeave && code .
+```
+
+> Ctrl + Shift + P -> Paste `Dev containers: Rebuild Container Without Cache` and Enter. First-time build takes 5-15 minutes depending on network speed. You may create a github codespace instead if your network is slow
+
+---
+
+### Open a new terminal and log in to your `gh` account as shown below
+
+```sh
+git config --global user.name "Your Name"
+git config --global user.email you@example.com
+gh auth login
+
+? What account do you want to log into? GitHub.com
+? What is your preferred protocol for Git operations? SSH
+? Generate a new SSH key to add to your GitHub account? No
+? How would you like to authenticate GitHub CLI? Login with a web browser
+
+! First copy your one-time code: <code>
+- Press Enter to open github.com in your browser...
+✓ Authentication complete. Press Enter to continue...
+```
+
+---
+
+## Create a New Repository in your GitHub account
+
+```sh
+export REPO_NAME="TicketWeave-1"
+git remote remove origin 2>/dev/null || true
+gh repo create "$REPO_NAME" --private >/dev/null 2>&1
+REMOTE_URL="https://github.com/$(gh api user | jq -r .login)/$REPO_NAME.git"
+git remote add origin "$REMOTE_URL" 2>/dev/null || true
+git branch -M main 2>/dev/null || true
+git push -u origin main
+git pull
+git remote -v
+echo "[INFO] Private repository '$REPO_NAME' created and pushed."
+```
+
+---
+
+### Phase 1: Infrastructure Foundation
+
+#### 1.1 Set Up Cloudflare Tunnel and DNS. [Docs](src/infra/cloudflare/README.md)
+Creates a CNAME record → Cloudflare Tunnel and deploys a `cloudflared` daemon that routes HTTPS/WSS traffic into the VPC **without a load balancer or public IPs**. The tunnel terminates on each EC2 host and forwards to `localhost:8000` (agent‑service). Requires a browser login to your Cloudflare account.
+
+```sh
+export CLOUDFLARE_ACCOUNT_ID=      # Cloudflare dashboard > Account Home > Search and enter "Copy account ID".
+export CLOUDFLARE_GLOBAL_API_KEY=  # https://dash.cloudflare.com/profile/api-tokens > API Keys
+export CLOUDFLARE_EMAIL=           # Replace with your email
+export DOMAIN=                     # replace with your domain
+bash src/infra/cloudflare/run.sh --apply
+```
+
+![alt text](src/offline/images/edge_tf_outputs.png)
+
+---
+
+#### 1.2 Provision AWS Infrastructure. [Docs](docs/infra.md)
+Provisions a VPC (public subnets for ECS, private subnets for RDS), a 2‑node ECS cluster on `t4g.small` ARM64 instances, S3 (policy embeddings), DynamoDB (rate‑limiting counters), RDS PostgreSQL (business data + LangGraph checkpoints), ECR repositories (immutable tags, scan‑on‑push), and least‑privilege IAM roles — all declared in OpenTofu.
+
+```sh
+export TF_VAR_region="ap-south-1"
+export TF_VAR_github_repository="<GH_USER_NAME>/$REPO_NAME"
+bash src/infra/aws/run.sh --create --env staging
+```
+
+![alt text](src/offline/images/aws.png)
+
+---
+
+### Phase 2: Data Preparation (Seed the fictional e-commerce company Kestral)
+
+- Creates the `users`, `products`, `orders`, `billing`, and `tickets` tables and populates them with synthetic data so the agent has customers to look up and orders to reference. [Docs](docs/pg_tables.md)
+- Generates Bedrock Titan v2 embeddings for 6 internal policy Markdown files (~59 chunks), writes a single `embeddings.json` to S3, and loads it in‑memory at agent startup for sub‑5ms brute‑force cosine retrieval. [Docs](docs/serverless_rag.md)
+
+The command below temporarily allows your IP into the RDS security group, runs the seed script, indexes the policy documents, and uploads the embeddings:
+
+```sh
+export MY_IP=$(curl -s ifconfig.me) SG_ID=$(tofu -chdir=src/infra/aws output -raw rds_security_group_id) && \
+aws ec2 authorize-security-group-ingress \
+    --group-id "$SG_ID" \
+    --protocol tcp \
+    --port 5432 \
+    --cidr "${MY_IP}/32" \
+    --region "${TF_VAR_region:-ap-south-1}" && \
+export DATABASE_URL="$(tofu -chdir=src/infra/aws output -raw rds_connection_string)" && \
+python3 src/offline/simulate_company/setup_postgres.py && \
+bash src/offline/index-policies/commands.sh
+```
+
+![alt text](src/offline/images/simulate_kestral.png)
+
+---
+
+### Phase 3.1: Trigger CI Workflows (Build & Push Container Images)
+
+Pushes the `AWS_ACCOUNT_ID` and `AWS_REGION` secrets to GitHub, then makes a trivial whitespace commit to trigger the CI pipelines. GitHub Actions authenticates to ECR via OIDC (no static credentials), builds the `agent-service` and `mcp-server` Docker images, scans them with Trivy, and pushes them to ECR with immutable tags.
+
+```sh
+gh secret set AWS_ACCOUNT_ID --body $(aws sts get-caller-identity --query Account --output text)
+echo " " >> src/workloads/agent-service/infra_tests.sh
+echo " " >> src/workloads/mcp-server/test_locally.sh
+gh secret set AWS_REGION --body $TF_VAR_region
+git add . && git commit -m "Rebuilding mcp and agent docker images" && git push origin main
+```
+
+![alt text](src/offline/images/ci.png)
+
+---
+
+### Phase 3.2: Store OAuth Secrets in AWS SSM Parameter Store
+
+The agent‑service authenticates users via Google OAuth (Microsoft is optional). These secrets are stored in SSM Parameter Store — never in code or environment variables — and fetched at runtime by the ECS task role with KMS decryption. By default all google domains are allowed in both user and admin login.
+
+> **OAuth Setup:** [Google](https://oauth2-proxy.github.io/oauth2-proxy/configuration/providers/google/#usage) | [Microsoft](https://oauth2-proxy.github.io/oauth2-proxy/configuration/providers/ms_entra_id)
+
+```sh
+export GOOGLE_CLIENT_ID="..."            # Google OAuth client ID
+export GOOGLE_CLIENT_SECRET="..."        # Google OAuth client secret
+
+# export MICROSOFT_CLIENT_ID="..."
+# export MICROSOFT_CLIENT_SECRET="..."
+# export MICROSOFT_TENANT_ID="..."       # Primary tenant ID (single-tenant or common)
+export DOMAIN=                           # Use the same $DOMAIN
+bash src/scripts/ssm-put.sh
+```
+
+---
+
+### Phase 3.3: Force Redeploy ECS Services
+
+Once the CI pipeline pushes the new images to ECR, force a rolling update on both ECS services so they pull the latest image tags. 
+
+```sh
+aws ecs update-service --cluster agentops-staging-cluster --service agentops-staging-cluster-agent --force-new-deployment --region ap-south-1
+aws ecs update-service --cluster agentops-staging-cluster --service agentops-staging-cluster-mcp --force-new-deployment --region ap-south-1
+```
+
+![alt text](src/offline/images/force_reload_ecs.png)
+
+> After ~5 minutes the agent is accessible at `https://<DOMAIN>` as shown in the gif.
+
+---
+
+### Phase 4: Teardown
+
+Destroys the Cloudflare DNS records and Tunnel, then tears down all AWS resources (VPC, ECS, RDS, S3, DynamoDB, ECR, IAM roles). Order matters: Cloudflare first so the tunnel stops routing traffic before the backend is removed.
+
+```sh
+bash src/infra/cloudflare/run.sh --destroy
+bash src/infra/aws/run.sh --destroy --env staging --yes-delete
+```
 
 ---
 
