@@ -1,6 +1,6 @@
 # TicketWeave
 
-## `TicketWeave` is a support-triage agent built around two constraints: `inference cost` and `agent safety`
+## TicketWeave is a support-triage agent built around two constraints: `inference cost` and `agent safety`.
 
 ### It receives customer messages over WebSocket, classifies every message before any tool runs, and routes the request to the appropriate support team via a deterministic intent-to-team map. Refunds, credits, pickup scheduling, and other customer-impacting operations are intentionally excluded — the agent's job is to assist human decision-making, not to act autonomously.
 
@@ -88,7 +88,21 @@ Full details in [docs/architecture.md](docs/architecture.md).
 
 ---
 
-### Cost-aware inference
+## Key Design Decisions
+
+| Decision | Why |
+|----------|-----|
+| **Cloudflare Tunnel over ALB/WAF/NAT** | Eliminates $62/month in networking costs, zero inbound ports |
+| **ECS on ARM (t4g) over Fargate** | 86% compute cost reduction ($142 → $20/month) — Graviton is cheaper than x86, and ECS managed instances handle provisioning, OS patching, and lifecycle management |
+| **Inline RAG over OpenSearch** | Sufficient at this corpus size (~60 chunks), $190/month savings, sub-5ms search latency |
+| **Never act autonomously** | The agent cannot refund, credit, or schedule pickups. Those tools were deliberately removed from the MCP server. |
+| **3 MCP tools instead of 9** | Cutting wallet credits, refund eligibility, and pickup scheduling removed an entire class of failure — the LLM no longer has a tool that can move money. Aligns with Microsoft's MCP research on tool-space interference ([source](https://www.microsoft.com/en-us/research/blog/tool-space-interference-in-the-mcp-era-designing-for-agent-compatibility-at-scale/)). |
+| **Deterministic routing** | A hard-coded `INTENT → TEAM` table guarantees predictable ticket assignment. |
+| **DSPy guardrail first** | Every message is classified **before** any context is fetched or any tool is called. |
+
+---
+
+## Cost-aware inference
 
 To keep average Bedrock spend low, several branches avoid the LLM entirely:
 
@@ -97,15 +111,15 @@ To keep average Bedrock spend low, several branches avoid the LLM entirely:
 - Orders are filtered to the relevant ones before the prompt is built.
 - Confirmations ("yes", "ok", "go ahead") and escalations bypass the LLM; the ticket is assembled from existing graph state.
 
-### State & persistence
+## State & persistence
 
 All conversation state is checkpointed to PostgreSQL after every node via `AsyncPostgresSaver` — the agent survives restarts and resumes any in-flight conversation.
 
-### MCP server
+## MCP server
 
 Three tools exposed over FastMCP: `lookup_customer`, `get_recent_orders`, `create_ticket`. It owns **no decision logic** — all routing, summarization, and policy decisions stay in the agent. Details in [docs/mcp_server.md](docs/mcp_server.md).
 
-### Inline RAG
+## Inline RAG
 
 Policy documents are pre-embedded with Bedrock Titan v2, stored as a single ~1.3 MB JSON file in S3, loaded once at startup, and searched with in-process NumPy cosine similarity (<5 ms). No vector database required. Details in [docs/serverless_rag.md](docs/serverless_rag.md).
 
@@ -163,20 +177,6 @@ Full details in [docs/infra.md](docs/infra.md).
 
 ---
 
-## Key Design Decisions
-
-| Decision | Why |
-|----------|-----|
-| **ECS over Fargate** | 86% compute cost reduction ($142 → $20/month) with ECS managed instances |
-| **Cloudflare Tunnel over ALB/WAF/NAT** | Eliminates $62/month in networking costs, zero inbound ports |
-| **Inline RAG over OpenSearch** | Sufficient for policy ingestion, $190/month savings, sub-5ms search latency |
-| **Never act autonomously** | The agent cannot refund, credit, or schedule pickups. Those tools were deliberately removed from the MCP server. |
-| **3 MCP tools instead of 9** | Cutting wallet credits, refund eligibility, and pickup scheduling removed an entire class of failure — the LLM no longer has a tool that can move money. |
-| **Deterministic routing** | A hard-coded `INTENT → TEAM` table guarantees predictable ticket assignment. |
-| **DSPy guardrail first** | Every message is classified **before** any context is fetched or any tool is called. |
-
----
-
 ## Cost Breakdown
 
 **~$23/month (staging) · ~$38/month (production with RDS always-on).**
@@ -190,7 +190,7 @@ Full details in [docs/infra.md](docs/infra.md).
 | Observability | $15–20 (X-Ray) | ~$3 (CloudWatch) | $12–17 |
 | **Total** | **~$414/month** | **~$23/month** | **91%** |
 
-> The baseline column reflects a conventional equivalent architecture (Fargate + ALB + NAT + OpenSearch) for comparison. Full derivation in [docs/cost_optimizations.md](docs/cost_optimizations.md).
+> The baseline column reflects a `conventional equivalent architecture` (Fargate + ALB + NAT + OpenSearch) for comparison. Full derivation in [docs/cost_optimizations.md](docs/cost_optimizations.md).
 
 ---
 
@@ -246,7 +246,7 @@ gh auth login
 ## Create a New Repository in your GitHub account
 
 ```sh
-export REPO_NAME="TicketWeave-1"
+export REPO_NAME="TicketWeave" # or any name
 git remote remove origin 2>/dev/null || true
 gh repo create "$REPO_NAME" --private >/dev/null 2>&1
 REMOTE_URL="https://github.com/$(gh api user | jq -r .login)/$REPO_NAME.git"
@@ -255,7 +255,7 @@ git branch -M main 2>/dev/null || true
 git push -u origin main
 git pull
 git remote -v
-echo "[INFO] Private repository '$REPO_NAME' created and pushed."
+echo "[INFO] A private repo '$REPO_NAME' created and pushed. Only visible from your account."
 ```
 
 ---
@@ -263,7 +263,7 @@ echo "[INFO] Private repository '$REPO_NAME' created and pushed."
 ### Phase 1: Infrastructure Foundation
 
 #### 1.1 Set Up Cloudflare Tunnel and DNS. [Docs](src/infra/cloudflare/README.md)
-Creates a CNAME record → Cloudflare Tunnel and deploys a `cloudflared` daemon that routes HTTPS/WSS traffic into the VPC **without a load balancer or public IPs**. The tunnel terminates on each EC2 host and forwards to `localhost:8000` (agent‑service). Requires a browser login to your Cloudflare account.
+Creates a CNAME record → Cloudflare Tunnel and deploys a `cloudflared` daemon that routes HTTPS/WSS traffic into the VPC **without a load balancer or public IPs**. The tunnel terminates on each EC2 host and forwards to `localhost:8000` (agent‑service). A Global API Key is required once for simplified automation. The script waits for you to authorize the Cloudflare Tunnel with your domain.
 
 ```sh
 export CLOUDFLARE_ACCOUNT_ID=      # Cloudflare dashboard > Account Home > Search and enter "Copy account ID".
@@ -334,7 +334,7 @@ git add . && git commit -m "Rebuilding mcp and agent docker images" && git push 
 
 The agent‑service authenticates users via Google OAuth (Microsoft is optional). These secrets are stored in SSM Parameter Store — never in code or environment variables — and fetched at runtime by the ECS task role with KMS decryption. By default all google domains are allowed in both user and admin login.
 
-> **OAuth Setup:** [Google](https://oauth2-proxy.github.io/oauth2-proxy/configuration/providers/google/#usage) | [Microsoft](https://oauth2-proxy.github.io/oauth2-proxy/configuration/providers/ms_entra_id)
+> **OAuth Credentials:** [Google](https://oauth2-proxy.github.io/oauth2-proxy/configuration/providers/google/#usage) | [Microsoft](https://oauth2-proxy.github.io/oauth2-proxy/configuration/providers/ms_entra_id)
 
 ```sh
 export GOOGLE_CLIENT_ID="..."            # Google OAuth client ID
@@ -398,6 +398,5 @@ bash src/infra/aws/run.sh --destroy --env staging --yes-delete
 | [docs/infra.md](docs/infra.md) | OpenTofu modules, ECS cluster, IAM, observability |
 | [docs/cost_optimizations.md](docs/cost_optimizations.md) | Full cost derivation and baseline comparison |
 | [docs/pg_tables.md](docs/pg_tables.md) | Database schema for all tables |
-| [docs/deployment.md](docs/deployment.md) | Step-by-step deployment guide |
 
 ---
