@@ -5,7 +5,7 @@ aiosignal==1.4.0
 alembic==1.18.4
 annotated-doc==0.0.4
 annotated-types==0.7.0
-anyio==4.13.0
+anyio==4.14.2
 asyncer==0.0.8
 asyncpg==0.31.0
 attrs==26.1.0
@@ -100,7 +100,7 @@ pydantic==2.13.4
 pydantic-settings==2.14.1
 pydantic_core==2.46.4
 Pygments==2.20.0
-PyJWT==2.13.0
+PyJWT==2.14.0
 pyperclip==1.11.0
 python-dateutil==2.9.0.post0
 python-dotenv==1.2.2
